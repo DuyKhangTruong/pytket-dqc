@@ -3,10 +3,11 @@ from pytket_dqc.utils import (
     DQCPass,
     direct_from_origin,
     ebit_memory_required,
+    max_ancillas_in_use,
     check_equivalence,
     to_euler_with_two_hadamards,
 )
-from pytket import Circuit, OpType
+from pytket import Circuit, OpType, Qubit
 from pytket.circuit import Op
 from pytket.pauli import Pauli
 from pytket_dqc import Distribution
@@ -23,6 +24,7 @@ from pytket.passes import DecomposeBoxes
 import numpy as np
 import pytest
 from pytket_dqc.utils.qasm import to_qasm_str
+from pytket_dqc.utils.gateset import start_proc, end_proc
 from pytket.qasm import circuit_from_qasm_str
 
 
@@ -115,6 +117,82 @@ def test_ebit_memory_required():
 
     # Comparing against calculationby hand
     assert ebit_memory_required(circ) == {0: 0, 1: 4, 2: 0}
+
+
+def test_max_ancillas_in_use_peaks_at_different_times():
+    # Server 1 and server 2 reach their peak usage at different times,
+    # so the global peak is smaller than the sum of the per-server peaks.
+    home = Qubit("server_0", 0)
+    link_1 = Qubit("server_1_link_register", 0)
+    link_2a = Qubit("server_2_link_register", 0)
+    link_2b = Qubit("server_2_link_register", 1)
+
+    circ = Circuit()
+    for q in [home, link_1, link_2a, link_2b]:
+        circ.add_qubit(q)
+    circ.add_custom_gate(start_proc(), [], [home, link_1])
+    circ.add_custom_gate(end_proc(), [], [link_1, home])
+    circ.add_custom_gate(start_proc(), [], [home, link_2a])
+    circ.add_custom_gate(start_proc(), [], [home, link_2b])
+    circ.add_custom_gate(end_proc(), [], [link_2a, home])
+    circ.add_custom_gate(end_proc(), [], [link_2b, home])
+
+    assert ebit_memory_required(circ) == {0: 0, 1: 1, 2: 2}
+    assert max_ancillas_in_use(circ) == 2
+
+
+def test_max_ancillas_in_use_overlapping():
+    # Same as above, but the link qubit on server 1 stays alive while
+    # both link qubits on server 2 are in use.
+    home = Qubit("server_0", 0)
+    link_1 = Qubit("server_1_link_register", 0)
+    link_2a = Qubit("server_2_link_register", 0)
+    link_2b = Qubit("server_2_link_register", 1)
+
+    circ = Circuit()
+    for q in [home, link_1, link_2a, link_2b]:
+        circ.add_qubit(q)
+    circ.add_custom_gate(start_proc(), [], [home, link_1])
+    circ.add_custom_gate(start_proc(), [], [home, link_2a])
+    circ.add_custom_gate(start_proc(), [], [home, link_2b])
+    circ.add_custom_gate(end_proc(), [], [link_2a, home])
+    circ.add_custom_gate(end_proc(), [], [link_2b, home])
+    circ.add_custom_gate(end_proc(), [], [link_1, home])
+
+    assert ebit_memory_required(circ) == {0: 0, 1: 1, 2: 2}
+    assert max_ancillas_in_use(circ) == 3
+
+
+def test_max_ancillas_in_use_no_ancillas():
+    circ = Circuit()
+    circ.add_qubit(Qubit("server_0", 0))
+    circ.add_qubit(Qubit("server_0", 1))
+    circ.add_gate(OpType.CU1, 1.0, circ.qubits)
+
+    assert max_ancillas_in_use(circ) == 0
+
+
+def test_max_ancillas_in_use_from_file():
+    # Per-server peaks are {1: 2, 2: 3}, but they never all coincide
+    with open("tests/test_circuits/pauli_6.json", "r") as fp:
+        circ = Circuit().from_dict(json.load(fp))
+    assert max_ancillas_in_use(circ) == 4
+
+    # Only server 1 uses link qubits, so the global peak equals its peak
+    with open("tests/test_circuits/frac_CZ_6.json", "r") as fp:
+        circ = Circuit().from_dict(json.load(fp))
+    assert max_ancillas_in_use(circ) == 4
+
+
+def test_max_ancillas_in_use_distribution():
+    with open("tests/test_circuits/chemistry_aware_post_vertex_cover.json", "r") as fp:
+        distribution = Distribution.from_dict(json.load(fp))
+
+    circ = distribution.to_pytket_circuit()
+    per_server = ebit_memory_required(circ).values()
+    in_use = max_ancillas_in_use(circ)
+
+    assert max(per_server) <= in_use <= sum(per_server)
 
 
 def test_detached_gate_count():
