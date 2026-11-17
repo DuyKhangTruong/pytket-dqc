@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pytket import Circuit, OpType
+from pytket import Circuit, OpType, Qubit
+from .gateset import is_start_proc, is_end_proc
 
 
 class ConstraintException(Exception):
@@ -82,6 +83,48 @@ def ebit_memory_required(circ: Circuit) -> dict[int, int]:
             current[server_id] -= 1
 
     return ebit_memory_required
+
+
+def max_ancillas_in_use(circ: Circuit) -> int:
+    """Scan the circuit and find the maximum number of ancillas (i.e. link
+    qubits) that are simultaneously in use, counted across all servers.
+
+    A link qubit is in use from the starting EJPP process that entangles it
+    until the ending EJPP process that releases it. The circuit is scanned
+    following the order given by ``circ.get_commands()``, which is the same
+    order used by ``ebit_memory_required``.
+
+    NOTE: This is not the same as ``sum(ebit_memory_required(circ).values())``
+    since different servers may reach their peak at different points in the
+    circuit. The value returned here always satisfies
+    ``max(per_server) <= max_ancillas_in_use(circ) <= sum(per_server)``
+    where ``per_server = ebit_memory_required(circ).values()``.
+
+    :param circ: The distributed circuit to be analysed, as produced by
+        ``Distribution.to_pytket_circuit``.
+    :type circ: Circuit
+
+    :return: The largest number of link qubits in use at the same time.
+    :rtype: int
+    """
+    in_use: set[Qubit] = set()
+    max_in_use = 0
+
+    for command in circ.get_commands():
+        if is_start_proc(command):
+            link_qubit = command.qubits[1]
+            assert is_link_qubit(link_qubit)
+            assert link_qubit not in in_use, f"{link_qubit} is already in use"
+            in_use.add(link_qubit)
+            max_in_use = max(max_in_use, len(in_use))
+
+        elif is_end_proc(command):
+            link_qubit = command.qubits[0]
+            assert is_link_qubit(link_qubit)
+            assert link_qubit in in_use, f"{link_qubit} was never started"
+            in_use.remove(link_qubit)
+
+    return max_in_use
 
 
 # TODO: This is checked by parsing the name of the qubit.

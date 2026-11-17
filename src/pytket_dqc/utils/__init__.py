@@ -36,6 +36,7 @@ from .circuit_analysis import (  # noqa:F401
     ConstraintException,
     ebit_cost,
     ebit_memory_required,
+    max_ancillas_in_use,
 )
 
 from .verification import check_equivalence  # noqa:F401
